@@ -1,0 +1,30 @@
+# --- Standard Ignores (Good Practice) ---
+.DS_Store
+.git
+.hg
+.svn
+.vscode # Example IDE config
+# ... any other editor or system files you don't need in the build
+
+# --- directories that should never be in the build ---
+# node_modules is often handled by EAS build, but explicit ignore is fine
+# node_modules/
+
+# Output directories you might have locally
+build/
+dist/
+temp/
+
+# --- Specific Ignores for your Issue ---
+# This ignores any 'Library' directory found within your project tree.
+# This is the most common way system folders get included via links.
+Library/
+
+# Let's try ignoring the *full path* just in case, though it's unusual
+# for this to be relative or linked in a way this works typically.
+# Include it just to be absolutely sure it's not being picked up relative.
+/Users/johnasencio/Library/Saved Application State/com.easeus.datarecoverywizard.savedState
+
+# You might also try ignoring the parent directory just in case of how it's linked
+/Users/johnasencio/Library/Saved Application State/
+
