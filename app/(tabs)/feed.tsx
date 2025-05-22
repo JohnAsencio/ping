@@ -14,15 +14,18 @@ import { calculateDistance } from '../../utils/calculateDistance';
 import useLocation from '../../hooks/useLocation';
 import type { User } from 'firebase/auth';
 import { getAuth } from 'firebase/auth';
-
-import { getFirestore, collection, getDocs } from 'firebase/firestore';
+// Import onSnapshot for real-time updates
+import { getFirestore, collection, getDocs, doc, getDoc, onSnapshot, query, orderBy } from 'firebase/firestore';
 import { useNavigation } from '@react-navigation/native';
+import Post from '../../components/PostStyle'; // Corrected path to Post component
 
 const db = getFirestore();
 
 interface Post {
   id: string;
   userID: string;
+  username?: string; // Add username
+  userPhotoURL?: string; // Add userPhotoURL
   content: string;
   location: {
     latitude: number;
@@ -71,88 +74,113 @@ const FeedScreen = () => {
   const user = auth.currentUser;
 
   const { coords } = useLocation(user?.uid, false);
+  const navigation = useNavigation();
 
-  const loadPosts = async () => {
-    if (!coords) {
-      setLoading(false);
-      return;
-    }
-
-    if (initialLoading) setLoading(true);
-
-    try {
-      const postsSnapshot = await getDocs(collection(db, 'posts'));
-      const postsData: Post[] = [];
-
-      for (const doc of postsSnapshot.docs) {
-        const postData = doc.data();
-
-        if (
-          !postData.location ||
-          typeof postData.location.latitude !== 'number' ||
-          typeof postData.location.longitude !== 'number'
-        )
-          continue;
-
-        const dist = calculateDistance(coords, postData.location);
-
-        if (dist <= radius) {
-          postsData.push({
-            id: doc.id,
-            userID: postData.userID || 'Unknown',
-            content: postData.content || '',
-            location: postData.location,
-            distance: dist,
-            timestamp: postData.createdAt ? postData.createdAt.toDate() : new Date(),
-            createdAt: postData.createdAt,
-          });
-        }
-      }
-
-      postsData.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
-
-      setPosts(postsData);
-    } catch (err) {
-      console.error('Error loading posts from Firestore', err);
-    } finally {
-      setLoading(false);
-      setInitialLoading(false);
-    }
-  };
+  // Use a ref or useCallback to ensure loadPosts function doesn't change unnecessarily
+  // or wrap the logic directly in useEffect. For onSnapshot, it's best in useEffect.
 
   useEffect(() => {
-    if (coords) {
-      loadPosts();
-    } else {
-      setLoading(false);
-    }
+    let unsubscribe: () => void; // Declare unsubscribe variable
+
+    const setupPostsListener = async () => {
+      if (!coords) {
+        setLoading(false);
+        setInitialLoading(false); // Make sure initialLoading is set to false even if no coords
+        return;
+      }
+
+      if (initialLoading) setLoading(true);
+
+      try {
+        // Create a query to the 'posts' collection, ordered by creation time
+        const postsCollectionRef = collection(db, 'posts');
+        const q = query(postsCollectionRef, orderBy('createdAt', 'desc')); // Order by 'createdAt' to get newest first
+
+        // Set up the real-time listener
+        unsubscribe = onSnapshot(q, async (snapshot) => {
+          const postsData: Post[] = [];
+
+          for (const docSnapshot of snapshot.docs) {
+            const postData = docSnapshot.data();
+
+            if (
+              !postData.location ||
+              typeof postData.location.latitude !== 'number' ||
+              typeof postData.location.longitude !== 'number'
+            ) {
+              continue;
+            }
+
+            const dist = calculateDistance(coords, postData.location);
+
+            if (dist <= radius) {
+              let username: string | undefined;
+              let userPhotoURL: string | undefined;
+
+              if (postData.userId) {
+                const userDocRef = doc(db, 'users', postData.userId);
+                const userDocSnap = await getDoc(userDocRef); // Still need a one-time fetch for user data
+                if (userDocSnap.exists()) {
+                  const userData = userDocSnap.data();
+                  username = userData.username || userData.email || 'Anonymous';
+                  userPhotoURL = userData.photoURL;
+                }
+              }
+
+              postsData.push({
+                id: docSnapshot.id,
+                userID: postData.userId,
+                username: username,
+                userPhotoURL: userPhotoURL,
+                content: postData.content || '',
+                location: postData.location,
+                distance: dist,
+                timestamp: postData.createdAt ? postData.createdAt.toDate() : new Date(),
+                createdAt: postData.createdAt,
+              });
+            }
+          }
+
+          // No need to sort here if orderBy('createdAt', 'desc') is used in query
+          // postsData.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+
+          setPosts(postsData);
+          setLoading(false);
+          setInitialLoading(false);
+        }, (error) => {
+          console.error('Error listening to posts from Firestore', error);
+          setLoading(false);
+          setInitialLoading(false);
+        });
+
+      } catch (err) {
+        console.error('Error setting up posts listener', err);
+        setLoading(false);
+        setInitialLoading(false);
+      }
+    };
+
+    setupPostsListener();
+
+    // Cleanup function: Unsubscribe from the listener when the component unmounts or dependencies change
+    return () => {
+      if (unsubscribe) {
+        unsubscribe();
+      }
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [radius, coords]);
+  }, [radius, coords]); // Dependencies: Re-run effect if radius or coords change
 
   const handleRadiusChange = (value: number) => setRadius(value);
 
   const handleLike = (postId: string) => {
     console.log(`Liked post with ID: ${postId}`);
+    // Implement your like logic here (e.g., update Firestore)
   };
 
-  const getRelativeTime = (date: Date): string => {
-    const now = new Date();
-    const seconds = Math.round((now.getTime() - date.getTime()) / 1000);
-    const intervals = [
-      { label: 'year', seconds: 31536000 },
-      { label: 'month', seconds: 2592000 },
-      { label: 'day', seconds: 86400 },
-      { label: 'hour', seconds: 3600 },
-      { label: 'minute', seconds: 60 },
-      { label: 'second', seconds: 1 },
-    ];
-    for (const interval of intervals) {
-      const count = Math.floor(seconds / interval.seconds);
-      if (count >= 1) {
-        return `${count} ${interval.label}${count > 1 ? 's' : ''} ago`;
-      }
-    }
-    return 'Just now';
+  const handlePressUser = (userId: string) => {
+    console.log(`Navigating to user profile for ID: ${userId}`);
+    // Example navigation: navigation.navigate('UserProfile', { userId });
   };
 
   return (
@@ -189,36 +217,18 @@ const FeedScreen = () => {
           )}
 
           {posts.map((post) => (
-            <View key={post.id} style={styles.postContainer}>
-              <View style={styles.postHeader}>
-                <View style={styles.userContainer}>
-                  {/* Placeholder avatar - you can replace with real user avatar if available */}
-                  <View style={styles.avatarPlaceholder} />
-                  <Text style={styles.username}>{post.userID}</Text>
-                </View>
-                <Text style={styles.optionsPlaceholder}>...</Text>
-              </View>
-
-              <View style={styles.postContent}>
-                <Text style={styles.postText}>{post.content}</Text>
-              </View>
-
-              <View style={styles.postInfo}>
-                <Text style={styles.distancePlaceholder}>
-                  {post.distance !== undefined ? `~ ${post.distance.toFixed(1)} miles away` : 'Distance unavailable'}
-                </Text>
-                <Text style={styles.timePlaceholder}>
-                  {post.timestamp ? getRelativeTime(post.timestamp) : 'Time unavailable'}
-                </Text>
-              </View>
-
-              <View style={styles.postActions}>
-                <TouchableOpacity onPress={() => handleLike(post.id)} style={styles.likeButton}>
-                  <View style={styles.iconPlaceholder} />
-                  <Text style={styles.likeCount}>Like</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
+            <Post
+              key={post.id}
+              id={post.id}
+              userID={post.userID}
+              username={post.username}
+              userPhotoURL={post.userPhotoURL}
+              content={post.content}
+              distance={post.distance}
+              timestamp={post.timestamp}
+              onLike={handleLike}
+              onPressUser={handlePressUser}
+            />
           ))}
         </ScrollView>
       )}
@@ -290,74 +300,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#FAFAFA',
   },
-  postContainer: {
-    backgroundColor: 'white',
-    borderBottomWidth: 1,
-    borderBottomColor: '#E0E0E0',
-padding: 15,
-},
-postHeader: {
-flexDirection: 'row',
-justifyContent: 'space-between',
-alignItems: 'center',
-},
-userContainer: {
-flexDirection: 'row',
-alignItems: 'center',
-},
-avatarPlaceholder: {
-width: 30,
-height: 30,
-backgroundColor: '#BDBDBD',
-borderRadius: 15,
-marginRight: 10,
-},
-username: {
-fontWeight: 'bold',
-},
-optionsPlaceholder: {
-fontSize: 22,
-fontWeight: 'bold',
-color: '#BDBDBD',
-},
-postContent: {
-marginVertical: 10,
-},
-postText: {
-fontSize: 16,
-color: '#212121',
-},
-postInfo: {
-flexDirection: 'row',
-justifyContent: 'space-between',
-},
-distancePlaceholder: {
-fontSize: 14,
-color: '#757575',
-},
-timePlaceholder: {
-fontSize: 14,
-color: '#757575',
-},
-postActions: {
-marginTop: 10,
-flexDirection: 'row',
-},
-likeButton: {
-flexDirection: 'row',
-alignItems: 'center',
-},
-iconPlaceholder: {
-width: 20,
-height: 20,
-backgroundColor: '#BDBDBD',
-borderRadius: 10,
-marginRight: 8,
-},
-likeCount: {
-fontSize: 14,
-color: '#212121',
-},
 });
 
 export default FeedScreen;
