@@ -52,7 +52,6 @@ const Post: React.FC<PostProps> = ({
   };
 
   return (
-
     <View key={id} style={styles.postContainer}>
       <View style={styles.postHeader}>
         <TouchableOpacity
@@ -68,7 +67,7 @@ const Post: React.FC<PostProps> = ({
             }}
           />
           {/* FIX: Ensure username is always a string before rendering in Text component */}
-          <Text style={styles.username}>{username || 'Anonymous'}</Text>
+          <Text style={styles.username}>{username || 'undefined'}</Text>
         </TouchableOpacity>
         <TouchableOpacity>
           <Ionicons name="ellipsis-horizontal" size={24} color="#BDBDBD" />

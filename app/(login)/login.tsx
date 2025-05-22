@@ -37,7 +37,7 @@ export default function Login() {
   useEffect(() => {
     if (user) {
       // Create user doc after login if needed
-      console.log('Successfully signed in user: ', user)
+      console.log('Successfully signed in user: ', user.uid)
       router.replace('/feed');
     }
   }, [user]);

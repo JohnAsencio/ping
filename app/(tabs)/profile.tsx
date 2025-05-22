@@ -270,7 +270,9 @@ export default function Profile() {
 
   const handlePressUser = (userId: string) => {
     // Navigate to the dedicated 'OtherUserProfile' component
+    if (userId != currentUser?.uid) {
     router.push({ pathname: '/profile-viewer/profile_viewer', params: { userId: userId } });
+    }
   };
 
   const handleSignOut = async () => {
