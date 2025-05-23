@@ -13,7 +13,6 @@ import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 
 import { createPost } from '../postService'; // Adjust path
-import { useAuth } from '../hooks/useAuth'; // your auth hook
 import { getAuth } from 'firebase/auth';
 import useUserLocation from '../hooks/useLocation'; // import your location hook
 

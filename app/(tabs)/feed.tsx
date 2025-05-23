@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -10,19 +10,19 @@ import {
   Image,
 } from 'react-native';
 import Slider from '@react-native-community/slider';
-import { calculateDistance } from '../../utils/calculateDistance';
-import useLocation from '../../hooks/useLocation';
+import { calculateDistance } from '../../utils/calculateDistance'; // Assuming this is correct and returns raw number
+import useUserLocation from '../../hooks/useLocation'; // Using 'useUserLocation'
 import type { User } from 'firebase/auth';
-import { getAuth } from 'firebase/auth';
+import { getAuth, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, doc, getDoc, onSnapshot, query, orderBy } from 'firebase/firestore';
 import { useRouter } from 'expo-router';
-import Post from '../../components/PostStyle';
+import Post from '../../components/PostStyle'; // Post component will receive formatted distance string
 
-const db = getFirestore();
+const db = getFirestore(); // Initialize Firestore
 
 interface Post {
   id: string;
-  userID: string;
+  userID: string; // Consistent with Post component prop and your decision
   username?: string;
   userPhotoURL?: string;
   content: string;
@@ -38,6 +38,7 @@ interface Post {
 }
 
 interface UserProfileData {
+  uid: string;
   username?: string;
   bio?: string;
   firstName?: string;
@@ -80,216 +81,232 @@ const FeedHeader = ({ user, currentUserProfileData }: { user: User | null; curre
 const FeedScreen = () => {
   const [posts, setPosts] = useState<Post[]>([]);
   const [radius, setRadius] = useState(1);
-  const [loading, setLoading] = useState(false);
-  const [initialLoading, setInitialLoading] = useState(true);
+  const [loadingPosts, setLoadingPosts] = useState(true);
+  const [currentUserProfileData, setCurrentUserProfileData] = useState<UserProfileData | null>(null);
+  const [isLoadingUserProfile, setIsLoadingUserProfile] = useState(true);
+  const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
 
   const auth = getAuth();
-  const currentUser = auth.currentUser;
 
-  const [currentUserProfileData, setCurrentUserProfileData] = useState<UserProfileData | null>(null);
-  const [isCurrentUserProfileLoading, setIsCurrentUserProfileLoading] = useState(true);
-
-  const { coords } = useLocation(currentUser?.uid, false);
+  // useUserLocation hook
+  const { coords, loading: loadingLocation, error: locationError } = useUserLocation(firebaseUser?.uid, false);
   const router = useRouter();
+
+  // Function to format the distance if it is < 0.1
+  const formatDistanceForDisplay = (dist: number): number => {
+    if (dist < 0.1 && dist >= 0) {
+      return 0.1;
+    }
+    return dist;
+  };
 
   const userCache = useRef(new Map<string, { username: string; photoURL?: string }>());
 
-  // Effect to fetch current user's profile data from Firestore
+  const fetchUserProfile = useCallback(async (userId: string): Promise<{ username: string; photoURL?: string }> => {
+    if (userCache.current.has(userId)) {
+      return userCache.current.get(userId)!;
+    }
+
+    const userDocRef = doc(db, 'users', userId);
+    try {
+      const userDocSnap = await getDoc(userDocRef);
+      let usernameToSet: string;
+      let photoURLToSet: string | undefined;
+
+      if (userDocSnap.exists()) {
+        const userData = userDocSnap.data() as UserProfileData;
+        usernameToSet = userData.username || userData.firstName || 'Anonymous';
+        photoURLToSet = userData.photoURL;
+      } else {
+        usernameToSet = 'Anonymous';
+      }
+
+      const userDataForCache = { username: usernameToSet, photoURL: photoURLToSet };
+      userCache.current.set(userId, userDataForCache);
+      return userDataForCache;
+
+    } catch (error) {
+      console.error('Error fetching user profile for:', userId, error);
+      const fallbackUserData = { username: 'Anonymous', photoURL: undefined };
+      userCache.current.set(userId, fallbackUserData);
+      return fallbackUserData;
+    }
+  }, []);
+
+  // Effect to listen for Firebase auth state changes
   useEffect(() => {
-    async function fetchCurrentUserProfile() {
-      console.log('fetchCurrentUserProfile: Initiated for currentUser:', currentUser?.uid);
-      if (!currentUser?.uid) {
+    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+      setFirebaseUser(user);
+      if (!user) {
         setCurrentUserProfileData(null);
-        setIsCurrentUserProfileLoading(false);
-        console.log('fetchCurrentUserProfile: No current user UID.');
+        setIsLoadingUserProfile(false);
+      }
+    });
+
+    return () => unsubscribeAuth();
+  }, [auth]);
+
+  // Effect to fetch current user's profile for the header
+  useEffect(() => {
+    const fetchCurrentUserProfileForHeader = async () => {
+      setIsLoadingUserProfile(true);
+      if (!firebaseUser?.uid) {
+        setCurrentUserProfileData(null);
+        setIsLoadingUserProfile(false);
         return;
       }
       try {
-        const userDocRef = doc(db, 'users', currentUser.uid);
+        const userDocRef = doc(db, 'users', firebaseUser.uid);
         const userDocSnap = await getDoc(userDocRef);
         if (userDocSnap.exists()) {
           const data = userDocSnap.data() as UserProfileData;
           setCurrentUserProfileData(data);
-          console.log('fetchCurrentUserProfile: Fetched data:', data);
+          userCache.current.set(firebaseUser.uid, {
+            username: data.username || data.firstName || firebaseUser.displayName || 'User',
+            photoURL: data.photoURL,
+          });
         } else {
           setCurrentUserProfileData(null);
-          console.warn(`Firestore user document not found for current user: ${currentUser.uid}`);
+          userCache.current.set(firebaseUser.uid, {
+            username: firebaseUser.displayName || 'User',
+            photoURL: firebaseUser.photoURL || undefined,
+          });
         }
       } catch (error) {
-        console.error('Error fetching current user profile data:', error);
+        console.error('Error fetching current user profile data for header:', error);
         setCurrentUserProfileData(null);
+        userCache.current.set(firebaseUser.uid, {
+          username: firebaseUser.displayName || 'User',
+          photoURL: firebaseUser.photoURL || undefined,
+        });
       } finally {
-        setIsCurrentUserProfileLoading(false);
-        console.log('fetchCurrentUserProfile: Loading complete.');
+        setIsLoadingUserProfile(false);
       }
-    }
+    };
 
-    fetchCurrentUserProfile();
-  }, [currentUser]);
+    if (firebaseUser?.uid) {
+      fetchCurrentUserProfileForHeader();
+    } else if (firebaseUser === null) {
+        setIsLoadingUserProfile(false);
+    }
+  }, [firebaseUser]);
 
   // Effect to set up real-time listener for posts
   useEffect(() => {
-    let unsubscribe: () => void;
+    let unsubscribe: (() => void) | null = null;
 
-    const setupPostsListener = async () => {
-      console.log('setupPostsListener: Initiated. isCurrentUserProfileLoading:', isCurrentUserProfileLoading, 'coords:', coords);
-
-      if (isCurrentUserProfileLoading || !coords) {
-        setLoading(false);
-        setInitialLoading(false);
-        console.log('setupPostsListener: Skipping due to loading or missing coords.');
-        return;
+    const subscribeToPosts = async () => {
+      // Only proceed if coords are available AND user profile loading is complete
+      if (!coords || isLoadingUserProfile) {
+        setLoadingPosts(false);
+        return; // Exit early if prerequisites are not met
       }
 
-      if (initialLoading) setLoading(true);
+      setLoadingPosts(true);
 
       try {
         const postsCollectionRef = collection(db, 'posts');
         const q = query(postsCollectionRef, orderBy('createdAt', 'desc'));
 
         unsubscribe = onSnapshot(q, async (snapshot) => {
-          console.log('onSnapshot: New snapshot received. Number of docs:', snapshot.docs.length);
-          const postsData: Post[] = [];
-          const userPromises: Promise<void>[] = [];
+          const rawPostsData: Omit<Post, 'username' | 'userPhotoURL'>[] = [];
+          const uniqueUserIds = new Set<string>();
 
           for (const docSnapshot of snapshot.docs) {
             const postData = docSnapshot.data();
             const postId = docSnapshot.id;
-            const postAuthorId = postData.userId;
-
-            // Debugging the author ID and current user
-            console.log(`  Processing post ID: ${postId}, Author ID: ${postAuthorId}`);
-            console.log(`  Current User ID: ${currentUser?.uid}, Current User Profile Data:`, currentUserProfileData);
-
+            // Read from Firestore as 'userId' (lowercase d)
+            const postAuthorIdFromFirestore = postData.userId; 
 
             if (
               !postData.location ||
               typeof postData.location.latitude !== 'number' ||
               typeof postData.location.longitude !== 'number'
             ) {
-              console.log(`  Skipping post ${postId}: Invalid location data.`);
-              continue;
+              continue; // Skip posts with invalid location data
             }
 
             const dist = calculateDistance(coords, postData.location);
 
             if (dist <= radius) {
-              userPromises.push((async () => {
-                let usernameToDisplay: string | undefined;
-                let userPhotoURLToDisplay: string | undefined;
-
-                if (postAuthorId) {
-                  // --- FIX: Use currentUserProfileData if the author is the current user ---
-                  if (currentUser && postAuthorId === currentUser.uid) {
-                    console.log(`  Post ${postId} is by current user. Using currentUserProfileData.`);
-                    // Ensure currentUserProfileData is not null/undefined before accessing its properties
-                    if (currentUserProfileData) {
-                      usernameToDisplay = currentUserProfileData.username || currentUserProfileData.firstName || 'Unknown User (Self)';
-                      userPhotoURLToDisplay = currentUserProfileData.photoURL;
-                      userCache.current.set(postAuthorId, { username: usernameToDisplay, photoURL: userPhotoURLToDisplay });
-                      console.log(`    Current user's name from profile data: ${usernameToDisplay}`);
-                    } else {
-                      usernameToDisplay = 'Unknown User (No Profile Data)';
-                      userPhotoURLToDisplay = undefined;
-                      console.log(`    Current user profile data is NULL for ID: ${postAuthorId}. Falling back.`);
-                    }
-
-                  } else {
-                    // For other users, use cache or fetch from Firestore.
-                    if (userCache.current.has(postAuthorId)) {
-                      const cachedUser = userCache.current.get(postAuthorId)!;
-                      usernameToDisplay = cachedUser.username;
-                      userPhotoURLToDisplay = cachedUser.photoURL;
-                      console.log(`  Post ${postId} by other user. Using cache.`);
-                    } else {
-                      console.log(`  Post ${postId} by other user. Fetching from Firestore.`);
-                      const userDocRef = doc(db, 'users', postAuthorId);
-                      const userDocSnap = await getDoc(userDocRef);
-                      if (userDocSnap.exists()) {
-                        const userData = userDocSnap.data();
-                        usernameToDisplay = userData.username || userData.firstName || userData.email || 'Anonymous';
-                        userPhotoURLToDisplay = userData.photoURL;
-                        userCache.current.set(postAuthorId, { username: usernameToDisplay!, photoURL: userPhotoURLToDisplay });
-                        console.log(`    Fetched other user's name: ${usernameToDisplay}`);
-                      } else {
-                         usernameToDisplay = 'Anonymous';
-                         console.log(`    No user document found for other user ID: ${postAuthorId}`);
-                      }
-                    }
-                  }
-                } else {
-                    usernameToDisplay = 'Anonymous';
-                    console.log(`Post ID ${postId} has no associated userID.`);
-                }
-
-                postsData.push({
-                  id: postId,
-                  userID: postAuthorId,
-                  username: usernameToDisplay,
-                  userPhotoURL: userPhotoURLToDisplay,
-                  content: postData.content || '',
-                  location: postData.location,
-                  distance: dist,
-                  timestamp: postData.createdAt ? postData.createdAt.toDate() : new Date(),
-                  createdAt: postData.createdAt,
-                });
-              })());
+              rawPostsData.push({
+                id: postId,
+                // Assign to Post.userID (capital D) for consistency with Post interface
+                userID: postAuthorIdFromFirestore,
+                content: postData.content || '',
+                location: postData.location,
+                distance: formatDistanceForDisplay(dist), // <--- Use the formatting function here
+                timestamp: postData.createdAt ? postData.createdAt.toDate() : new Date(),
+                createdAt: postData.createdAt,
+              });
+              if (postAuthorIdFromFirestore) {
+                uniqueUserIds.add(postAuthorIdFromFirestore);
+              }
             }
           }
 
-          await Promise.all(userPromises);
-          postsData.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
-          setPosts(postsData);
-          setLoading(false);
-          setInitialLoading(false);
-          console.log('onSnapshot: Posts data updated. Loading complete.');
+          const userProfiles = await Promise.all(
+            Array.from(uniqueUserIds).map(userId => fetchUserProfile(userId))
+          );
+
+          const userProfileMap = new Map<string, { username: string; photoURL?: string }>();
+          Array.from(uniqueUserIds).forEach((userId, index) => {
+            userProfileMap.set(userId, userProfiles[index]);
+          });
+
+          const enrichedPosts: Post[] = rawPostsData.map(post => {
+            // Use Post.userID (capital D) when getting from map
+            const userProfile = userProfileMap.get(post.userID);
+            return {
+              ...post,
+              username: userProfile?.username || 'Anonymous',
+              userPhotoURL: userProfile?.photoURL,
+            };
+          });
+
+          enrichedPosts.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+          setPosts(enrichedPosts);
+          setLoadingPosts(false);
         }, (error) => {
-          console.error('Error listening to posts from Firestore', error);
-          setLoading(false);
-          setInitialLoading(false);
+          console.error('Error listening to posts from Firestore:', error);
+          setLoadingPosts(false);
         });
 
       } catch (err) {
-        console.error('Error setting up posts listener', err);
-        setLoading(false);
-        setInitialLoading(false);
+        console.error('Error setting up posts listener:', err);
+        setLoadingPosts(false);
       }
     };
 
-    setupPostsListener();
+    subscribeToPosts();
 
     return () => {
       if (unsubscribe) {
-        unsubscribe();
+        unsubscribe(); // Unsubscribe from the Firestore listener
       }
-      console.log('setupPostsListener: Cleanup function called.');
     };
-    // Dependencies: Re-run effect if radius, coords, currentUser, or currentUserProfileData changes
-    // This ensures that when currentUserProfileData finishes loading, the posts re-render with correct names.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [radius, coords, currentUser, currentUserProfileData, isCurrentUserProfileLoading]);
-
+  }, [radius, coords, isLoadingUserProfile, fetchUserProfile]);
 
   const handleRadiusChange = (value: number) => setRadius(value);
 
   const handleLike = (postId: string) => {
-    console.log(`Liked post with ID: ${postId}`);
+    // Implement like functionality here, e.g., update Firestore
   };
 
   const handlePressUser = (userId: string) => {
-    console.log(`Attempting to navigate to user profile for ID: ${userId}`);
-    if (currentUser && userId === currentUser.uid) {
-      console.log('Navigating to current user profile tab: /profile');
+    if (firebaseUser && userId === firebaseUser.uid) {
       router.push('/profile');
     } else {
-      console.log('Navigating to other user profile viewer: /profile-viewer with ID:', userId);
       router.push({ pathname: '/profile-viewer/profile_viewer', params: { profileUserId: userId } });
     }
   };
 
+  // Determine overall loading state more accurately, including location loading
+  const showOverallLoading = isLoadingUserProfile || loadingPosts || loadingLocation || firebaseUser === undefined;
+
   return (
     <SafeAreaView style={styles.safeArea}>
-      <FeedHeader user={currentUser} currentUserProfileData={currentUserProfileData} />
+      <FeedHeader user={firebaseUser} currentUserProfileData={currentUserProfileData} />
 
       <View style={styles.radiusContainer}>
         <Text style={styles.radiusLabel}>Show posts within {radius.toFixed(1)} miles</Text>
@@ -306,15 +323,17 @@ const FeedScreen = () => {
         />
       </View>
 
-      {/* Show loading while current user profile loads OR main posts are loading */}
-      {(loading || isCurrentUserProfileLoading) && (
+      {showOverallLoading ? (
         <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
           <ActivityIndicator size="large" color="#00C6FF" />
+          <Text style={{ marginTop: 10 }}>{
+            firebaseUser === undefined ? 'Authenticating...' :
+            loadingLocation ? 'Getting your location...' :
+            isLoadingUserProfile ? 'Loading your profile...' :
+            'Loading posts...'
+          }</Text>
         </View>
-      )}
-
-      {/* Only render content if both loading states are false */}
-      {!loading && !isCurrentUserProfileLoading && (
+      ) : (
         <ScrollView style={styles.container}>
           {posts.length === 0 && (
             <View style={{ padding: 20, alignItems: 'center' }}>
@@ -330,7 +349,7 @@ const FeedScreen = () => {
               username={post.username}
               userPhotoURL={post.userPhotoURL}
               content={post.content}
-              distance={post.distance}
+              distance={post.distance} // <--- Pass the formatted string here
               timestamp={post.timestamp}
               onLike={handleLike}
               onPressUser={handlePressUser}

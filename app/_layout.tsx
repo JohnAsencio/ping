@@ -15,7 +15,7 @@ export default function AppLayout() {
   const isOnAuthScreen = segments[0] === undefined || segments[0] === 'home' || segments[0] === '(login)';
   const showPostButton = user && !isOnAuthScreen;
 
-  useUserLocation(user?.uid ?? null, isOnAuthScreen);
+  //useUserLocation(user?.uid ?? null, isOnAuthScreen);
 
   return (
     <View style={{ flex: 1 }}>
