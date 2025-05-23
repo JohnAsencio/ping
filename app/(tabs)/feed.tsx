@@ -297,7 +297,7 @@ const FeedScreen = () => {
     if (firebaseUser && userId === firebaseUser.uid) {
       router.push('/profile');
     } else {
-      router.push({ pathname: '/profile-viewer/profile_viewer', params: { profileUserId: userId } });
+      router.push(`/profile-viewer/${userId}`);
     }
   };
 
